@@ -93,6 +93,7 @@ Usage:
   -CleanTemp            Clean temp directory after install.
   -version              Show version and exit.
   -silent               Supresses all outputs, especially for SCCM installations.
+  -force                Sysmon is already installed, proceeding with reinstallation.
 
 Examples:
   .\SysmonGuard.ps1
@@ -151,13 +152,14 @@ Verwendung:
   -CleanTemp            Temporäre Dateien nach der Installation löschen.
   -version              Zeigt die Versionsnummer und beendet.
   -silent               Unterdrückt jegliche Ausgaben für SCCM Installationen.
+  -force                Sysmon ist bereits installiert, mit Neuinstallation weitermachen.
 
 Beispiele:
   .\SysmonGuard.ps1
   .\SysmonGuard.ps1 -DebugMode
   .\SysmonGuard.ps1 -Uninstall
   .\SysmonGuard.ps1 -UpdateConfig
-  .\SysmonGuard.ps1 -ConfigFile .\sysmonconfig.xml
+  .\SysmonGuard.ps1 -ConfigFile .\sysmonconfig.xmls
   .\SysmonGuard.ps1 -SysmonZipFile sysmon.zip
   .\SysmonGuard.ps1 -LogPath "C:\Logs"
   .\SysmonGuard.ps1 -CleanTemp
