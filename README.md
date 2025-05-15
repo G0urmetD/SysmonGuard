@@ -23,6 +23,7 @@ Usage:
   -CleanTemp            Clean temp directory after install.
   -version              Show version and exit.
   -silent               Supresses all outputs, especially for SCCM installations.
+  -force                Sysmon is already installed, proceeding with reinstallation.
 
 Examples:
   .\SysmonGuard.ps1
@@ -31,7 +32,6 @@ Examples:
   .\SysmonGuard.ps1 -UpdateConfig
   .\SysmonGuard.ps1 -ConfigFile .\sysmonconfig.xml
   .\SysmonGuard.ps1 -SysmonZipFile sysmon.zip
-  .\SysmonGuard.ps1 -SysmonZipFile sysmon.zip -ConfigFile .\sysmonconfig.xml
   .\SysmonGuard.ps1 -LogPath "C:\Logs"
   .\SysmonGuard.ps1 -CleanTemp
   .\SysmonGuard.ps1 -version
