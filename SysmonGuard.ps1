@@ -1,20 +1,25 @@
 #######################################################################################################
 # Script:    SysmonGuard.ps1
 # Author:    g_ourmet
-# Version:   2.0
+# Version:   2.1
 # Purpose:   Installation, uninstallation and configuration update of Sysmon on Windows 10/11 clients
 #######################################################################################################
+
+#Requires -Version 5.1
+#Requires -RunAsAdministrator
 
 param (
     [switch]$DebugMode,
     [switch]$CleanTemp,
     [switch]$Uninstall,
     [switch]$UpdateConfig,
+    [switch]$CheckStatus,
     [switch]$silent,
     [switch]$force,
 
     [string]$Proxy = "",
     [string]$ConfigFile = "",
+    [string]$ConfigUrl = "",
     [string]$SysmonZipFile = "",
     [string]$LogPath = "",
     [ValidateSet("en", "de")]
@@ -32,6 +37,8 @@ param (
 # 3 - Download Failed
 # 4 - Config Update Failed
 # 5 - Not Installed
+# 6 - Extraction Failed
+# 7 - Installation Failed
 
 # Exit codes definition
 enum ExitCode {
@@ -41,11 +48,21 @@ enum ExitCode {
     DownloadFailed = 3
     ConfigUpdateFailed = 4
     NotInstalled = 5
+    ExtractionFailed = 6
+    InstallationFailed = 7
 }
 
-$ScriptVersion = "2.0"
+$ScriptVersion = "2.1"
 $SysmonUrl = "https://download.sysinternals.com/files/Sysmon.zip"
 $DefaultConfigUrl = "https://raw.githubusercontent.com/SwiftOnSecurity/sysmon-config/refs/heads/master/sysmonconfig-export.xml"
+
+# Enforce TLS 1.2 for secure downloads
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# Detect system architecture (32-bit or 64-bit)
+$Is64Bit = [Environment]::Is64BitOperatingSystem
+$SysmonExeName = if ($Is64Bit) { "Sysmon64.exe" } else { "Sysmon.exe" }
+$SysmonServiceName = if ($Is64Bit) { "Sysmon64" } else { "Sysmon" }
 
 # Language texts
 $Text = @{
@@ -59,7 +76,8 @@ $Text = @{
         "Done" = "Sysmon installation complete."
         "Uninstalling" = "Uninstalling Sysmon..."
         "Uninstalled" = "Sysmon has been uninstalled."
-        "NotInstalled" = "Sysmon is not installed. No uninstallation necessary."
+        "NotInstalled" = "Sysmon is not installed."
+        "NotInstalledUninstall" = "Sysmon is not installed. No uninstallation necessary."
         "DownloadError" = "Failed to download required files."
         "UpdateConfig" = "Updating Sysmon configuration..."
         "UpdateDone" = "Sysmon configuration update complete."
@@ -67,8 +85,18 @@ $Text = @{
         "TempCleanupFailed" = "Failed to clean up temporary files."
         "CustomLogPathUsed" = "Using custom log path: {0}"
         "ShowingVersion" = "SysmonGuard version: {0}"
-        "Reinstalling"       = "Sysmon is already installed. Force flag is set, proceeding with reinstallation."
-        "SilentMode"         = "Silent mode active. Suppressing output."
+        "Reinstalling" = "Sysmon is already installed. Force flag is set, proceeding with reinstallation."
+        "SilentMode" = "Silent mode active. Suppressing output."
+        "ExtractionError" = "Failed to extract Sysmon archive."
+        "InstallationError" = "Failed to install Sysmon."
+        "Finished" = "SysmonGuard finished successfully."
+        "StatusInstalled" = "Sysmon is installed."
+        "StatusNotInstalled" = "Sysmon is not installed."
+        "StatusVersion" = "Sysmon version: {0}"
+        "StatusServiceRunning" = "Sysmon service is running."
+        "StatusServiceStopped" = "Sysmon service is stopped."
+        "StatusPath" = "Sysmon path: {0}"
+        "StatusArch" = "System architecture: {0}"
         "HelpText" = @'
  _______  __   __  _______  __   __  _______  __    _  _______  __   __  _______  ______    ______  
 |       ||  | |  ||       ||  |_|  ||       ||  |  | ||       ||  | |  ||   _   ||    _ |  |      | 
@@ -78,15 +106,17 @@ $Text = @{
  _____| |  |   |   _____| || ||_|| ||       || | |   ||   |_| ||       ||   _   ||   |  | ||       |
 |_______|  |___|  |_______||_|   |_||_______||_|  |__||_______||_______||__| |__||___|  |_||______| 
                                       
-        Install Sysmon Tool
+        Install Sysmon Tool (v2.1)
 
 Usage:
   -h / --help           Show help screen.
   -DebugMode            Enable debug mode.
   -Uninstall            Uninstall Sysmon.
   -UpdateConfig         Update Sysmon configuration.
+  -CheckStatus          Check Sysmon installation status.
   -Proxy <URL>          Proxy for web requests.
   -ConfigFile <Path>    Local Sysmon config file path.
+  -ConfigUrl <URL>      Custom Sysmon config URL.
   -SysmonZipFile <Path> Local Sysmon.zip path.
   -LogPath <Path>       Custom log directory.
   -Language <en|de>     Script language (default: en).
@@ -95,12 +125,24 @@ Usage:
   -silent               Supresses all outputs, especially for SCCM installations.
   -force                Sysmon is already installed, proceeding with reinstallation.
 
+Exit Codes:
+  0 - Success
+  1 - General Error
+  2 - Already Installed
+  3 - Download Failed
+  4 - Config Update Failed
+  5 - Not Installed
+  6 - Extraction Failed
+  7 - Installation Failed
+
 Examples:
   .\SysmonGuard.ps1
   .\SysmonGuard.ps1 -DebugMode
   .\SysmonGuard.ps1 -Uninstall
   .\SysmonGuard.ps1 -UpdateConfig
+  .\SysmonGuard.ps1 -CheckStatus
   .\SysmonGuard.ps1 -ConfigFile .\sysmonconfig.xml
+  .\SysmonGuard.ps1 -ConfigUrl "https://example.com/config.xml"
   .\SysmonGuard.ps1 -SysmonZipFile sysmon.zip
   .\SysmonGuard.ps1 -LogPath "C:\Logs"
   .\SysmonGuard.ps1 -CleanTemp
@@ -118,7 +160,8 @@ Examples:
         "Done" = "Sysmon Installation abgeschlossen."
         "Uninstalling" = "Deinstalliere Sysmon..."
         "Uninstalled" = "Sysmon wurde deinstalliert."
-        "NotInstalled" = "Sysmon ist nicht installiert. Keine Deinstallation notwendig."
+        "NotInstalled" = "Sysmon ist nicht installiert."
+        "NotInstalledUninstall" = "Sysmon ist nicht installiert. Keine Deinstallation notwendig."
         "DownloadError" = "Fehler beim Herunterladen der benötigten Dateien."
         "UpdateConfig" = "Aktualisiere Sysmon-Konfiguration..."
         "UpdateDone" = "Sysmon-Konfigurationsupdate abgeschlossen."
@@ -126,8 +169,18 @@ Examples:
         "TempCleanupFailed" = "Fehler beim Entfernen der temporären Dateien."
         "CustomLogPathUsed" = "Benutzerdefinierter Log-Pfad wird verwendet: {0}"
         "ShowingVersion" = "SysmonGuard Version: {0}"
-        "Reinstalling"       = "Sysmon ist bereits installiert. Der Force-Parameter ist gesetzt, starte Neuinstallation."
-        "SilentMode"         = "Silent-Modus aktiv. Ausgaben werden unterdrückt."
+        "Reinstalling" = "Sysmon ist bereits installiert. Der Force-Parameter ist gesetzt, starte Neuinstallation."
+        "SilentMode" = "Silent-Modus aktiv. Ausgaben werden unterdrückt."
+        "ExtractionError" = "Fehler beim Entpacken des Sysmon-Archivs."
+        "InstallationError" = "Fehler bei der Sysmon-Installation."
+        "Finished" = "SysmonGuard erfolgreich abgeschlossen."
+        "StatusInstalled" = "Sysmon ist installiert."
+        "StatusNotInstalled" = "Sysmon ist nicht installiert."
+        "StatusVersion" = "Sysmon Version: {0}"
+        "StatusServiceRunning" = "Sysmon-Dienst läuft."
+        "StatusServiceStopped" = "Sysmon-Dienst ist gestoppt."
+        "StatusPath" = "Sysmon-Pfad: {0}"
+        "StatusArch" = "Systemarchitektur: {0}"
         "HelpText" = @'
  _______  __   __  _______  __   __  _______  __    _  _______  __   __  _______  ______    ______  
 |       ||  | |  ||       ||  |_|  ||       ||  |  | ||       ||  | |  ||   _   ||    _ |  |      | 
@@ -137,15 +190,17 @@ Examples:
  _____| |  |   |   _____| || ||_|| ||       || | |   ||   |_| ||       ||   _   ||   |  | ||       |
 |_______|  |___|  |_______||_|   |_||_______||_|  |__||_______||_______||__| |__||___|  |_||______|  
                                       
-        Sysmon Installations-Tool
+        Sysmon Installations-Tool (v2.1)
 
 Verwendung:
   -h / --help           Zeigt diese Hilfe.
   -DebugMode            Aktiviert Debug-Modus.
   -Uninstall            Deinstalliert Sysmon.
   -UpdateConfig         Aktualisiert Sysmon-Konfiguration.
+  -CheckStatus          Prüft den Sysmon-Installationsstatus.
   -Proxy <URL>          Proxy-Server für Webanfragen.
   -ConfigFile <Pfad>    Lokale Konfigurationsdatei verwenden.
+  -ConfigUrl <URL>      Benutzerdefinierte Konfigurations-URL.
   -SysmonZipFile <Pfad> Lokale Sysmon.zip-Datei verwenden.
   -LogPath <Pfad>       Benutzerdefinierter Log-Pfad.
   -Language <en|de>     Sprache des Skripts (Standard: en).
@@ -154,12 +209,24 @@ Verwendung:
   -silent               Unterdrückt jegliche Ausgaben für SCCM Installationen.
   -force                Sysmon ist bereits installiert, mit Neuinstallation weitermachen.
 
+Exit-Codes:
+  0 - Erfolg
+  1 - Allgemeiner Fehler
+  2 - Bereits installiert
+  3 - Download fehlgeschlagen
+  4 - Konfigurationsupdate fehlgeschlagen
+  5 - Nicht installiert
+  6 - Entpacken fehlgeschlagen
+  7 - Installation fehlgeschlagen
+
 Beispiele:
   .\SysmonGuard.ps1
   .\SysmonGuard.ps1 -DebugMode
   .\SysmonGuard.ps1 -Uninstall
   .\SysmonGuard.ps1 -UpdateConfig
-  .\SysmonGuard.ps1 -ConfigFile .\sysmonconfig.xmls
+  .\SysmonGuard.ps1 -CheckStatus
+  .\SysmonGuard.ps1 -ConfigFile .\sysmonconfig.xml
+  .\SysmonGuard.ps1 -ConfigUrl "https://example.com/config.xml"
   .\SysmonGuard.ps1 -SysmonZipFile sysmon.zip
   .\SysmonGuard.ps1 -LogPath "C:\Logs"
   .\SysmonGuard.ps1 -CleanTemp
@@ -277,10 +344,49 @@ function Write-DebugLog {
     Write-Log -Message $Message -Level "INFO"
 }
 
-Write-DebugLog "Parameters - DebugMode: $DebugMode, CleanTemp: $CleanTemp, Uninstall: $Uninstall, UpdateConfig: $UpdateConfig, Silent: $silent, Force: $force, Proxy: $Proxy, ConfigFile: $ConfigFile, SysmonZipFile: $SysmonZipFile, LogPath: $LogPath"
+Write-DebugLog "Parameters - DebugMode: $DebugMode, CleanTemp: $CleanTemp, Uninstall: $Uninstall, UpdateConfig: $UpdateConfig, CheckStatus: $CheckStatus, Silent: $silent, Force: $force, Proxy: $Proxy, ConfigFile: $ConfigFile, ConfigUrl: $ConfigUrl, SysmonZipFile: $SysmonZipFile, LogPath: $LogPath"
+
+# Gets the installed Sysmon executable path dynamically
+function Get-SysmonPath {
+    # Try to get from running process first
+    $process = Get-Process -Name $SysmonServiceName -ErrorAction SilentlyContinue
+    if ($process -and $process.Path) {
+        return $process.Path
+    }
+    
+    # Try common installation paths
+    $possiblePaths = @(
+        "$env:SystemRoot\$SysmonExeName",
+        "$env:ProgramFiles\Sysmon\$SysmonExeName",
+        "${env:ProgramFiles(x86)}\Sysmon\$SysmonExeName"
+    )
+    
+    foreach ($path in $possiblePaths) {
+        if (Test-Path -Path $path) {
+            return $path
+        }
+    }
+    
+    # Fallback to Windows directory
+    return "$env:SystemRoot\$SysmonExeName"
+}
+
+# Gets Sysmon version from the installed executable
+function Get-SysmonVersion {
+    $sysmonPath = Get-SysmonPath
+    if (Test-Path -Path $sysmonPath) {
+        try {
+            $versionInfo = (Get-Item $sysmonPath).VersionInfo
+            return $versionInfo.FileVersion
+        } catch {
+            return "Unknown"
+        }
+    }
+    return $null
+}
 
 # Deletes temporary files used during installation if they exist
-function Cleanup-TempFiles {
+function Clear-TempFiles {
     if (Test-Path -Path $TempPath) {
         try {
             Remove-Item -Path $TempPath -Recurse -Force -ErrorAction Stop
@@ -316,70 +422,140 @@ function Download-File {
     }
 }
 
-# Define temp directory more robustly
+# Define temp directory
 $UserTempPath = [System.IO.Path]::GetTempPath()
 $TempPath = Join-Path -Path $UserTempPath -ChildPath "SysmonInstall"
 
 Write-Log -Message $Text.Start -Level "INFO"
 
-# Check whether Sysmon is installed
+# Check whether Sysmon is installed (check both service names for compatibility)
+# Note: Some installations may use 'Sysmon' even on 64-bit systems, or vice versa
 $sysmonCheck = Get-CimInstance -ClassName Win32_Service -Filter "Name='Sysmon64' OR Name='Sysmon'" -ErrorAction SilentlyContinue
+
+# Check Status operation
+if ($CheckStatus) {
+    $arch = if ($Is64Bit) { "64-bit" } else { "32-bit" }
+    if (-not $silent) {
+        Write-Host ""
+        Write-Host "=== Sysmon Status ===" -ForegroundColor Cyan
+        Write-Host ($Text.StatusArch -f $arch) -ForegroundColor White
+    }
+    
+    if ($sysmonCheck) {
+        $sysmonPath = Get-SysmonPath
+        $sysmonVersion = Get-SysmonVersion
+        $serviceStatus = $sysmonCheck.State
+        
+        if (-not $silent) {
+            Write-Host $Text.StatusInstalled -ForegroundColor Green
+            if ($sysmonVersion) {
+                Write-Host ($Text.StatusVersion -f $sysmonVersion) -ForegroundColor White
+            }
+            Write-Host ($Text.StatusPath -f $sysmonPath) -ForegroundColor White
+            if ($serviceStatus -eq "Running") {
+                Write-Host $Text.StatusServiceRunning -ForegroundColor Green
+            } else {
+                Write-Host $Text.StatusServiceStopped -ForegroundColor Yellow
+            }
+        }
+        Write-Log -Message "Status check: Sysmon installed, version $sysmonVersion, service $serviceStatus" -Level "INFO"
+        exit [int][ExitCode]::Success
+    } else {
+        if (-not $silent) {
+            Write-Host $Text.StatusNotInstalled -ForegroundColor Yellow
+        }
+        Write-Log -Message "Status check: Sysmon not installed" -Level "INFO"
+        exit [int][ExitCode]::NotInstalled
+    }
+}
 
 # Configuration update
 if ($UpdateConfig) {
     if (-not $sysmonCheck) {
         Write-Log -Message $Text.NotInstalled -Level "ERROR"
-        exit [int][ExitCode]::GeneralError
+        exit [int][ExitCode]::NotInstalled
     }
     Write-Log -Message $Text.UpdateConfig -Level "INFO"
+    
+    $sysmonPath = Get-SysmonPath
+    
     if (-not $ConfigFile) {
-        $ConfigUrl = $DefaultConfigUrl
+        $effectiveConfigUrl = if ($ConfigUrl) { $ConfigUrl } else { $DefaultConfigUrl }
         $ConfigFile = "$env:TEMP\sysmonconfig.xml"
-        if (!(Download-File -Url $ConfigUrl -Destination $ConfigFile)) { exit [int][ExitCode]::DownloadFailed }
+        if (!(Download-File -Url $effectiveConfigUrl -Destination $ConfigFile)) { 
+            exit [int][ExitCode]::DownloadFailed 
+        }
     }
-    Start-Process -FilePath "C:\\Windows\\Sysmon64.exe" -ArgumentList "-c `"$ConfigFile`"" -Wait -NoNewWindow
-    Write-Log -Message $Text.UpdateDone -Level "INFO"
-    exit [int][ExitCode]::Success
+    
+    try {
+        $process = Start-Process -FilePath $sysmonPath -ArgumentList "-c `"$ConfigFile`"" -Wait -NoNewWindow -PassThru
+        if ($process.ExitCode -ne 0) {
+            Write-Log -Message "Config update failed with exit code: $($process.ExitCode)" -Level "ERROR"
+            exit [int][ExitCode]::ConfigUpdateFailed
+        }
+        Write-Log -Message $Text.UpdateDone -Level "INFO"
+        exit [int][ExitCode]::Success
+    } catch {
+        Write-Log -Message "$($Text.UpdateConfig) failed: $($_.Exception.Message)" -Level "ERROR"
+        exit [int][ExitCode]::ConfigUpdateFailed
+    }
 }
 
 # Uninstallation
 if ($Uninstall) {
     if ($sysmonCheck) {
-        $SysmonExePath = (Get-Process -Name Sysmon64 -ErrorAction SilentlyContinue).Path
-        if (!$SysmonExePath) {
-            $SysmonExePath = "C:\\Windows\\Sysmon64.exe"
-        }
+        $sysmonPath = Get-SysmonPath
         Write-Log -Message $Text.Uninstalling -Level "INFO"
-        Start-Process -FilePath $SysmonExePath -ArgumentList "-u" -Wait -NoNewWindow
-        Write-Log -Message $Text.Uninstalled -Level "INFO"
+        try {
+            $process = Start-Process -FilePath $sysmonPath -ArgumentList "-u" -Wait -NoNewWindow -PassThru
+            if ($process.ExitCode -eq 0) {
+                Write-Log -Message $Text.Uninstalled -Level "INFO"
+                exit [int][ExitCode]::Success
+            } else {
+                Write-Log -Message "Uninstall returned exit code: $($process.ExitCode)" -Level "WARN"
+                exit [int][ExitCode]::GeneralError
+            }
+        } catch {
+            Write-Log -Message "Uninstall failed: $($_.Exception.Message)" -Level "ERROR"
+            exit [int][ExitCode]::GeneralError
+        }
     } else {
-        Write-Log -Message $Text.NotInstalled -Level "WARN"
+        Write-Log -Message $Text.NotInstalledUninstall -Level "WARN"
+        exit [int][ExitCode]::NotInstalled
     }
-    exit [int][ExitCode]::Success
 }
 
 # Installation
 if ($sysmonCheck) {
     if ($force) {
-        Write-Log -Message "Sysmon is already installed. Force flag is set, proceeding with reinstallation." -Level "WARN"
-        $SysmonExePath = (Get-Process -Name Sysmon64 -ErrorAction SilentlyContinue).Path
-        if (!$SysmonExePath) {
-            $SysmonExePath = "C:\\Windows\\Sysmon64.exe"
+        Write-Log -Message $Text.Reinstalling -Level "WARN"
+        $sysmonPath = Get-SysmonPath
+        try {
+            $process = Start-Process -FilePath $sysmonPath -ArgumentList "-u" -Wait -NoNewWindow -PassThru
+            if ($process.ExitCode -eq 0) {
+                Write-Log -Message "Existing Sysmon uninstalled successfully." -Level "INFO"
+            } else {
+                Write-Log -Message "Uninstall during reinstall returned exit code: $($process.ExitCode)" -Level "WARN"
+            }
+        } catch {
+            Write-Log -Message "Failed to uninstall existing Sysmon: $($_.Exception.Message)" -Level "ERROR"
+            exit [int][ExitCode]::GeneralError
         }
-        Start-Process -FilePath $SysmonExePath -ArgumentList "-u" -Wait -NoNewWindow
-        Write-Log -Message "Existing Sysmon uninstalled successfully." -Level "INFO"
     } else {
         Write-Log -Message $Text.AlreadyInstalled -Level "WARN"
         exit [int][ExitCode]::AlreadyInstalled
     }
 }
 
-$TempPath = "$env:TEMP\SysmonInstall"
+# Setup paths for installation
 $SysmonZip = "$TempPath\Sysmon.zip"
-$SysmonExe = "$TempPath\Sysmon64.exe"
+$SysmonExe = "$TempPath\$SysmonExeName"
+
+# Determine config URL to use
+$effectiveConfigUrl = if ($ConfigUrl) { $ConfigUrl } else { $DefaultConfigUrl }
+
 if (-not $ConfigFile) {
     $ConfigFile = "$TempPath\sysmonconfig.xml"
-    $ConfigUrl = $DefaultConfigUrl
 }
 
 if (!(Test-Path -Path $TempPath)) {
@@ -388,35 +564,53 @@ if (!(Test-Path -Path $TempPath)) {
 
 if (-not $SysmonZipFile) {
     Write-Log -Message $Text.DownloadingSysmon -Level "INFO"
-    if (!(Download-File -Url $SysmonUrl -Destination $SysmonZip)) { exit [int][ExitCode]::DownloadFailed }
+    if (!(Download-File -Url $SysmonUrl -Destination $SysmonZip)) { 
+        exit [int][ExitCode]::DownloadFailed 
+    }
 } else {
     Write-Log -Message "Using local Sysmon zip: $SysmonZipFile" -Level "INFO"
     Copy-Item -Path $SysmonZipFile -Destination $SysmonZip -Force
 }
 
 Write-Log -Message $Text.Extracting -Level "INFO"
-Expand-Archive -Path $SysmonZip -DestinationPath $TempPath -Force
+try {
+    Expand-Archive -Path $SysmonZip -DestinationPath $TempPath -Force
+} catch {
+    Write-Log -Message "$($Text.ExtractionError): $($_.Exception.Message)" -Level "ERROR"
+    exit [int][ExitCode]::ExtractionFailed
+}
 
 if (-not (Test-Path -Path $ConfigFile)) {
     Write-Log -Message $Text.DownloadingConfig -Level "INFO"
-    if (!(Download-File -Url $ConfigUrl -Destination $ConfigFile)) { exit [int][ExitCode]::DownloadFailed }
+    if (!(Download-File -Url $effectiveConfigUrl -Destination $ConfigFile)) { 
+        exit [int][ExitCode]::DownloadFailed 
+    }
 }
 
 if (!(Test-Path -Path $SysmonExe)) {
-    Write-Log -Message $Text.DownloadError -Level "ERROR"
+    Write-Log -Message "$($Text.DownloadError) - $SysmonExeName not found in archive" -Level "ERROR"
     exit [int][ExitCode]::DownloadFailed
 }
 
 Write-Log -Message $Text.Installing -Level "INFO"
-Start-Process -FilePath $SysmonExe -ArgumentList "-accepteula -i `"$ConfigFile`"" -Wait -NoNewWindow
-Write-Log -Message $Text.Done -Level "INFO"
+try {
+    $process = Start-Process -FilePath $SysmonExe -ArgumentList "-accepteula -i `"$ConfigFile`"" -Wait -NoNewWindow -PassThru
+    if ($process.ExitCode -ne 0) {
+        Write-Log -Message "$($Text.InstallationError) - Exit code: $($process.ExitCode)" -Level "ERROR"
+        exit [int][ExitCode]::InstallationFailed
+    }
+    Write-Log -Message $Text.Done -Level "INFO"
+} catch {
+    Write-Log -Message "$($Text.InstallationError): $($_.Exception.Message)" -Level "ERROR"
+    exit [int][ExitCode]::InstallationFailed
+}
 
 if ($CleanTemp) {
-    Cleanup-TempFiles
+    Clear-TempFiles
 }
 
 if (-not $silent) {
-    Write-Output "SysmonGuard finished with ExitCode: $LASTEXITCODE"
+    Write-Output $Text.Finished
 }
 
 exit [int][ExitCode]::Success
